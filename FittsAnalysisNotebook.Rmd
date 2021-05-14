@@ -1,0 +1,1119 @@
+---
+title: "Analysis of Fitts Data"
+output: html_notebook
+---
+
+Hello, welcome to the walkthrough of how we analyzed the KINARM data from our bimanual coordination task using elastic and viscous loads to test aspects of the Fitt's principle. Essentially, our research question asked how bimanual coordination was affected by the application of particular perturbations to the hands. 
+
+Our dependent variables in this experiment are (for each hand):
+
+1) Reaction time: the time it takes to begin moving in response to a stimulus
+2) Movement time: the time from initial movement to movement completion
+3) Total Response time: Reaction time + Movement time
+4) Movement Onset time: the index of the beginning of movement time
+5) Peak velocity index: the index for peak velocity
+6) Peak acceleration index: the index for peak acceleration
+7) Peak velocity and peak acceleration: cm/s and cm/s^2
+8) Within-subject correlations of all the above measures between the left and right hand
+
+Most of these measurements have been used since the landmark paper written by Scott Kelso and colleagues (1979) in Science appeared to investigate bimanual coordination. They conducted an experiment to test whether the kinematics of bimanual coordination supported the hypothesis that A) coordination is controlled by a central processor that provides instructions to the body for the limbs to carry out or if B) coordination is controlled by functional groupings of muscles themselves. Their experiments supported the latter hypothesis. We aimed to continue this line of research by determining if bimanual coordination under the application of forces maintains the same patterns: namely, synchronicity between the limbs (demonstrated by no differences between the indicies of velocity and acceleration of the left and right hands) despite differences in difficulty and distance for each limb. 
+
+The factors that we manipulated in this experiment are as follows:
+
+1) Distance: same distance, left hand reaches further, or right hand reaches further (3  levels)
+2) Load type: elastic loads (LR), viscous loads (LR), elastic (L) - viscous (R) loads, viscous (L) - elastic (R) loads, or no loads (5 levels)
+3) Load strength: easy, medium, and hard strength types (3 levels)
+
+Loading libraries...
+```{r}
+library(tidyverse)
+library(broom)
+library(brms)
+library(broom.mixed)
+library(tidybayes)
+
+theme_set(theme_classic(base_size = 15))
+options(mc.cores = parallel::detectCores())
+```
+
+
+We will begin by loading in the dataset and setting the factors. 
+
+```{r}
+setwd("/Users/alexandriapabst/Desktop/Projects/KINARM/Data/fulldata/")
+
+fittslong <- read.csv("fitts_long.csv")
+
+newlong <- read.csv("newfittslong.csv")
+
+fitts_data <- left_join(fittslong, newlong, by = c("trial_len1","trial_len2","reach_diff","peak_velRight","peak_velLeft","vel_inxR","vel_inxL",
+                                                     "mo_timeR","mo_timeL", "Participant"), keep = FALSE)
+```
+
+```{r}
+fitts_data$Participant <- as.factor(fitts_data$Participant)
+fitts_data$Load <- as.factor(fitts_data$Load)
+fitts_data$Load_kind <- as.factor(fitts_data$Load_kind)
+fitts_data$Distance <- as.factor(fitts_data$Distance)
+fitts_data$Difficulty <- as.factor(fitts_data$Difficulty)
+fitts_data$TrialNo <- as.factor(fitts_data$TrialNo)
+fitts_data$firsthand <- as.factor(fitts_data$firsthand)
+
+
+fitts_data$trial_len1 <- as.numeric(fitts_data$trial_len1)
+fitts_data$trial_len2 <- as.numeric(fitts_data$trial_len2)
+fitts_data$reach_diff <- as.numeric(fitts_data$reach_diff)
+fitts_data$vel_inxR <- as.numeric(fitts_data$vel_inxR)
+fitts_data$vel_inxL <- as.numeric(fitts_data$vel_inxL)
+fitts_data$mo_timeR <- as.numeric(fitts_data$mo_timeR)
+fitts_data$mo_timeL <- as.numeric(fitts_data$mo_timeL)
+fitts_data$index_diff <- as.numeric(fitts_data$index_diff)
+fitts_data$peakAccR <- as.numeric(fitts_data$peakAccR)
+fitts_data$peakAccL <- as.numeric(fitts_data$peakAccL)
+fitts_data$acc_inxR <- as.numeric(fitts_data$acc_inxR)
+fitts_data$acc_inxL <- as.numeric(fitts_data$acc_inxL)
+
+
+head(fitts_data)
+```
+
+We have some NAs within our data. Removing them
+```{r}
+fitts_data1 <- na.omit(fitts_data)
+head(fitts_data1)
+```
+
+
+```{r}
+fitts_data1$peak_velRight <- (fitts_data1$peak_velRight) * 100 #converting to cm/s
+fitts_data1$peak_velLeft <- (fitts_data1$peak_velLeft) * 100 #converting to cm/s
+
+fitts_data1$peakAccL <- (fitts_data1$peakAccL) * 100 #converting to cm/s^2
+fitts_data1$peakAccR <- (fitts_data1$peakAccR) * 100 #converting to cm/s^2
+
+head(fitts_data1)
+```
+
+```{r}
+fitts_data1 <- filter(fitts_data1, trial_len2 <= 5000)
+```
+
+
+```{r}
+ggplot(data = fitts_data1) +
+  geom_jitter(data = fitts_data1, aes(x = Load, y = reach_diff, color = Distance), alpha = 0.5) +
+  stat_summary(aes(x = Load, y = reach_diff), geom = "point")
+```
+
+Need to create long dataset for trial length.
+
+```{r}
+#look at column for first hand
+#create a column for second hand
+#if first hand includes "left", 
+
+fitts_data1$Handreach2 <- ifelse(grepl("Left", fitts_data1$firsthand, ignore.case = T), "Right",
+                             ifelse(grepl("Right", fitts_data1$firsthand, ignore.case = T), "Left", "other"))
+head(fitts_data1)
+```
+
+```{r}
+colnames(fitts_data1)[colnames(fitts_data1) == "firsthand"] <- "Handreach1"
+head(fitts_data1)
+```
+```{r}
+fitts_data1$Handreach1 <- as.character(fitts_data1$Handreach1)
+fitts_data1$Handreach1[fitts_data1$Handreach1 == "Left reached"] <- "Left"
+fitts_data1$Handreach1[fitts_data1$Handreach1 == "Right reached"] <- "Right"
+head(fitts_data1)
+
+```
+
+
+```{r}
+fitts <- fitts_data1 %>%
+  spread(Handreach1, trial_len1)
+
+fitts$Left <- ifelse(is.na(fitts$Left), fitts$trial_len2, fitts$Left)
+fitts$Right <- ifelse(is.na(fitts$Right),fitts$trial_len2, fitts$Right)
+head(fitts)
+
+
+```
+Omg this literally took me an entire day to figure out #veryembarassed but now I have the dataframe put together that I need!! Yassss
+
+Need to set up contrasts.
+
+```{r}
+fitts <- fitts %>%
+  mutate(Difficulty = relevel(Difficulty, ref = "N"),
+         Load = relevel(Load, ref = "A"),
+         Distance = relevel(Distance, ref = "B"),
+         Load_kind = relevel(Load_kind, ref = "neut"))
+
+contrasts(fitts$Difficulty)
+```
+
+
+
+```{r}
+ggplot(data = fitts, mapping = aes(x = Left, y = Right, color = Load_kind)) +
+  geom_point(alpha = 0.5)
+```
+
+Okay, now that we've got that figured out, we need to do the same exact thing for mo_time and mutate a column for react time. Basically for every dependent measure, we should have a left and right version for each trial. Which we have all the data for, but we just need to reshape the data a bit.
+
+```{r}
+fitts <- fitts %>% 
+  dplyr::rename(left_responsetime = "Left", right_responsetime = Right,
+         left_moveonset = mo_timeL, right_moveonset = mo_timeR)
+#apparently I have to specify the package, because rename gets angry when the reshape package is loaded too
+
+fitts <- fitts %>%
+  mutate(left_movetime = left_responsetime - left_moveonset,
+         right_movetime = right_responsetime - right_moveonset)
+
+fitts <- fitts %>%
+  mutate(left_react = left_responsetime - left_movetime,
+         right_react = right_responsetime - right_movetime)
+head(fitts)
+```
+
+
+Creating some tables / figures of descriptive statistics. 
+```{r}
+fitts %>% 
+  group_by(Load_kind, Distance) %>%
+  summarise(meanRTLeft = mean(left_responsetime),
+            sdRTleft = sd(left_responsetime),
+            meanRTRight = mean(right_responsetime),
+            sdRTright = sd(right_responsetime),
+            deltaRT = (abs(meanRTRight-meanRTLeft)))
+```
+
+```{r}
+fitts %>% 
+  group_by(Load_kind, Distance) %>%
+  summarise(meanRTLeft = mean(left_movetime),
+            sdRTleft = sd(left_movetime),
+            meanRTRight = mean(right_movetime),
+            sdRTright = sd(right_movetime),
+            deltaRT = (abs(meanRTRight-meanRTLeft)))
+```
+
+```{r}
+fitts %>% 
+  group_by(Load_kind, Distance) %>%
+  summarise(meanRTLeft = mean(left_react),
+            sdRTleft = sd(left_react),
+            meanRTRight = mean(right_react),
+            sdRTright = sd(right_react),
+            deltaRT = (abs(meanRTRight-meanRTLeft)))
+```
+
+```{r}
+
+fitts %>% 
+  group_by(Load_kind, Distance, Participant, TrialNo) %>%
+  summarise(meanRTLeft = mean(left_react),
+            sdRTleft = sd(left_react),
+            meanRTRight = mean(right_react),
+            sdRTright = sd(right_react)) %>%
+  ggplot(aes(x = ))
+
+```
+
+
+Response time plot
+```{r}
+ggplot(data = fitts, mapping = aes(x = left_responsetime, y = right_responsetime, color = Load_kind)) +
+  geom_point(alpha = 0.5)
+```
+Looks like there's a general positive correlation between the limbs (this makes sense, because the limbs should move together). The no loads condition (A) definitely looks like it has a smaller reaction time compared to the other conditions.
+
+
+Now for a reaction time plot (time between stimulus being presented and the participant beginning their movements) for each hand.
+
+```{r}
+ggplot(data = fitts, mapping = aes(x = left_react, y = right_react, color = Load_kind)) +
+  geom_point(alpha = 0.5)
+```
+Great. Lot of 1's in the dataset. Which honestly could indicate one of two things:
+1) Participants are moving right when the trial begins - nothing we can do to control for this
+2) The standard 5% of peak velocity threshold used to indicate movement onset may not be accurate enough.
+
+I think it's the latter. Doing a per-trial assessment and identification through each trial would likely resolve this, however I do not have the RA-power to be able to feasibly do this across almost 7000 trials.
+
+Now for movement time.
+```{r}
+ggplot(data = fitts, mapping = aes(x = left_movetime, y = right_movetime, color = Load_kind)) +
+  geom_point(alpha = 0.5)
+```
+Movement time (between react and total response time, where the participant is actually moving) looks really similar to the first plot of response time for each hand. The condition without loads (A) seems to have the smallest response times for each hand. There is also a positive correlation between each hand (this is expected).
+
+Now for peak velocity of each hand.
+
+```{r}
+ggplot(data = fitts, mapping = aes(x = peak_velLeft, y = peak_velRight, color = Load_kind, alpha = 0.2)) +
+  geom_point()
+```
+Oh wow, this is really cool! We see a positive correlation between each hand. It looks like Load A (no loads condition) in general looks like it has a higher peak velocity of each hand compared to the other conditions. Interestingly, wes see that in the load conditions where each hand was given a different load, the arm that had elastic loads was consistently faster than the arm with the viscous loads applied. Well, this really isn't that surprising. Velocity-based loads...should impact velocity :) Finally, we might see that viscous/viscous loads applied to both hands may have smaller peak velocity compared to elastic loads applied to both hands. 
+
+```{r}
+ggplot(data = fitts, mapping = aes(x = vel_inxL, y = vel_inxR, color = Load_kind)) +
+  geom_point(alpha = 0.5)
+```
+
+Interesting. These data show the timepoint of peak velocity, which is looking like it mirrors the plot above.
+
+```{r}
+ggplot(data = fitts, mapping = aes(x = peakAccL, y = peakAccR, color = Load_kind)) +
+  geom_point(alpha = 0.5)
+```
+Mirrors the velocity plot. Good. 
+
+```{r}
+ggplot(data = fitts, mapping = aes(x = acc_inxL, y = acc_inxR, color = Load)) +
+  geom_point(alpha = 0.5)
+```
+Huh this is weird. Lots of 1s in the data, indicating again that the velocity threshold method used to determine movement onset is not a great system (possibly). I have really strong intuitions about this because I've seen this happen in data I've worked with prior and also in communications with other movement researchers. 
+
+```{r}
+ggplot(fitts, aes(x = left_responsetime, y = right_responsetime, color = Participant))+
+  geom_point()+
+  geom_smooth(method = "lm", se = F) +
+  geom_smooth(aes(x = left_responsetime, y = right_responsetime), method = "lm", se = F, color = "black") +
+  facet_wrap(~Load_kind)
+```
+
+```{r}
+library(bayesplot)
+library(RColorBrewer)
+
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+ggplot(fitts, aes(x = left_responsetime, y = right_responsetime, color = Load, shape = Distance)) + 
+  geom_point(alpha = 0.2) + 
+  scale_color_manual(values = cbPalette) + 
+  stat_ellipse(aes(linetype = Distance))
+```
+
+```{r}
+theme_set(theme_classic(base_size = 10))
+
+ggplot(fitts, aes(x = left_responsetime, color = Load, fill = Load)) +
+  geom_density(alpha = 0.2) + 
+  scale_color_manual(values = cbPalette)+
+  scale_fill_manual(values = cbPalette) +
+  facet_wrap(~Distance)
+```
+
+```{r}
+ggplot(fitts, aes(x = right_responsetime, color = Load, fill = Load)) +
+  geom_density(alpha = 0.2) + 
+  scale_color_manual(values = cbPalette)+
+  scale_fill_manual(values = cbPalette) +
+  facet_wrap(~Distance)
+```
+
+```{r}
+ggplot(fitts, aes(x = peak_velLeft, color = Load, fill = Load)) +
+  geom_density(alpha = 0.2) + 
+  scale_color_manual(values = cbPalette)+
+  scale_fill_manual(values = cbPalette) +
+  facet_wrap(~Distance)
+```
+
+```{r}
+ggplot(fitts, aes(x = peak_velRight, color = Load, fill = Load)) +
+  geom_density(alpha = 0.2) + 
+  scale_color_manual(values = cbPalette)+
+  scale_fill_manual(values = cbPalette) +
+  facet_wrap(~Distance)
+```
+These plots are pretty interesting. At least for peak velocity, we see that there is some difference across load type. Additionally, we see that peak velocity is generally slower in a hand when the opposite hand has to reach further - this makes sense, because the limb should compensate for the increased distance of the other hand by slowing down. Additionally, peak velocity of either hand that reaches further doesn't seem to substantially differ from the equal distance condition. One more observation - when looking at how the hand responds to load conditions, EV looks the same as EE for the left hand (and VE & VV, also follows same pattern for the right hand). So despite having different loads or same loads, the hand will respond the same regarding peak velocity.
+
+
+
+
+
+
+Okay, let's get started with the analysis. 
+
+When doing a Bayesian analysis, we need to select our priors. So, let's think about what we know about our data already.
+
+For the factors: 
+Personally, I believe that weakly uninformative priors are the best kinds of priors for this particular dataset. Specifically, we don't know a lot about how these effects will modulate aspects of reaction time that we are interested in. Loads may or may not increase / decrease response time - not a lot of intuition about how it will modulate response time, and in what direction. 
+Distance may influence reaction time, but we actually shouldn't expect this based on Kelso's 1979 experiment! They claimed that reaches (under no load conditions) actually did not have a difference between hands in aspects of response time, and that the limbs moved synchronously with each other despite differences in distance.
+Difficulty may increase response time, but we don't know how much. Just because it requires more physical effort in order to reach the same distance in this conditions (the applied force becomes greater).
+As far as movement parameters like velocity and acceleration, we would expect these to be modulated in the same way.
+
+For the dependent measure:
+We are working with reaction time (generally) - continuous numeric data, is always positive, will never be zero (at least in the case of this dataset and how the equipment collects the data in the first place). There are no RTs greater than 5000ms, because we removed those. We do know and expect that reaction time between each hand (if the other hand's times are included as a factor) are positively and highly correlated, so when using one of these as a fixed effect for the other dependent measure, make sure to take this into account. 
+
+For the random factors:
+We do not expect participants to differ significantly from each other. Movement data is pretty ubiquitous across groups of people, whereas other dependent measures like attitudes and language data are heavily influenced by parameters within the environment, not just lab-controlled factors.
+We do not expect trials to differ significantly from each other. These are just repetitions of the same movement across the same conditions.
+
+For the random variation:
+Absolutely no intuitions about this.
+
+For the distributions of this data:
+
+We should use the lognormal distribution for this dataset. 
+
+##Need to merge datasets from wide to long format for each dv
+
+```{r}
+fitts_response <- pivot_longer(fitts, c(left_responsetime,right_responsetime), names_to = "hand", values_to = "responsetime")
+head(fitts_response)
+```
+
+```{r}
+ggplot(data = fitts_response) +
+  geom_jitter(mapping = aes(x = responsetime, y = hand, color = Distance), 
+             alpha = 0.5) +
+  stat_summary(aes(x = responsetime, y = hand), geom = "point") +
+  facet_wrap(~Load_kind + Distance, nrow = 4, ncol = 3)
+```
+
+
+```{r}
+fitts_react <- pivot_longer(fitts, c(left_react,right_react), names_to = "hand", values_to = "reacttime")
+head(fitts_react)
+```
+
+```{r}
+ggplot(data = fitts_react) +
+  geom_jitter(mapping = aes(x = reacttime, y = hand, color = Difficulty), 
+             alpha = 0.5) +
+  stat_summary(aes(x = reacttime, y = hand), geom = "point") +
+  facet_wrap(~Load_kind + Distance, nrow = 4, ncol = 3)
+```
+
+```{r}
+fitts_move <- pivot_longer(fitts, c(left_movetime,right_movetime), names_to = "hand", values_to = "movetime")
+head(fitts_move)
+```
+
+```{r}
+ggplot(data = fitts_move) +
+  geom_jitter(mapping = aes(x = movetime, y = hand, color = Distance), 
+             alpha = 0.5) +
+  stat_summary(aes(x = movetime, y = hand), geom = "point") +
+  facet_wrap(~Load_kind + Distance, nrow = 4, ncol = 3)
+```
+
+
+```{r}
+fitts_vel <- pivot_longer(fitts, c(vel_inxL,vel_inxR), names_to = "hand", values_to = "vel_index")
+head(fitts_vel)
+```
+
+```{r}
+ggplot(data = fitts_vel) +
+  geom_jitter(mapping = aes(x = vel_index, y = hand, color = Difficulty), 
+             alpha = 0.5) +
+  stat_summary(aes(x = vel_index, y = hand), geom = "point") +
+  facet_wrap(~Load_kind + Distance, nrow = 4, ncol = 3)
+```
+
+```{r}
+fitts_acc <- pivot_longer(fitts, c(acc_inxL,acc_inxR), names_to = "hand", values_to = "acc_index")
+head(fitts_acc)
+```
+
+```{r}
+ggplot(data = fitts_acc) +
+  geom_jitter(mapping = aes(x = acc_index, y = hand, color = Difficulty), 
+             alpha = 0.5) +
+  stat_summary(aes(x = acc_index, y = hand), geom = "point") +
+  facet_wrap(~Load_kind + Distance, nrow = 4, ncol = 3)
+```
+
+
+
+##Might be worth it to do a comparison between using the normal and lognormal distributions, or to uninformative priors? That way it'll basically be frequentist vs weakly informative priors which is what I wanted to do in the first place.
+```{r}
+#Priors for response time
+get_prior(responsetime ~ 1 + hand + Distance + Load_kind + Difficulty + (1|Participant) + (1|TrialNo), 
+          data = fitts_response, family = gaussian())
+```
+
+```{r}
+prior1 <- c(prior(normal(2000, 500), class = Intercept),
+            prior(normal(0, 250), class = b, coef = DistanceL),
+            prior(normal(0,250), class = b, coef = DistanceR),
+            prior(normal(0, 100), class = b, coef = DifficultyE),
+            prior(normal(5, 100), class = b, coef = DifficultyM),
+            prior(normal(10, 100), class = b, coef = DifficultyH),
+            prior(normal(0, 250), class = b, coef = handright_responsetime),
+            prior(normal(0, 250), class =  b, coef = Load_kinddiff),
+            prior(normal(0,250), class = b, coef = Load_kindSameEE),
+            prior(normal(0,250), class = b, coef = Load_kindSameVV),
+            prior(normal(0, 100), class = sigma),
+            prior(normal(0, 100), class = sd)) # on average, would reasonably expect reaction times should fall between 0 - 2000
+
+#are these priors good? Let's see!
+#also make sure if we add the other hand in as a predictor, to add that hand in to this prior distribution set
+```
+
+```{r}
+fitts1.brm.prior <- brm(responsetime ~ 1 + hand + Load_kind + Distance + Difficulty + (1|Participant) + (1|TrialNo),
+                  data = fitts_response,
+                  sample_prior = "only",
+                  family = gaussian(),
+                  prior = prior1)
+```
+
+```{r}
+pp_check(fitts1.brm.prior, type = "dens_overlay", nsamples = 100)
+```
+
+Try lognormal distribution now?
+
+##Also try skew_normal
+
+```{r}
+prior2 <- c(prior(normal(1500, 300), class = Intercept),
+            prior(normal(0, 100), class = b, coef = DistanceL),
+            prior(normal(0,100), class = b, coef = DistanceR),
+            prior(normal(0, 100), class = b, coef = handright_responsetime),
+            prior(normal(0, 250), class =  b, coef = Load_kinddiff),
+            prior(normal(0,250), class = b, coef = Load_kindSameEE),
+            prior(normal(0,250), class = b, coef = Load_kindSameVV),
+            prior(normal(0, 100), class = sigma),
+            prior(normal(0, 100), class = sd))
+```
+
+
+
+```{r}
+fitts2.brm.prior <- brm(responsetime ~ 1 + hand + Load_kind + Distance + Difficulty + (1|Participant) + (1|TrialNo),
+                  data = fitts_response,
+                  sample_prior = "only",
+                  family = skew_normal(),
+                  prior = prior2)
+```
+
+```{r}
+pp_check(fitts2.brm.prior, type = "dens_overlay", nsamples = 100)
+```
+I feel good about this second set of priors. It's conservative enough (I think, at least) and is weakly informative whereas the prior choice selection of the first model was much more unbounded.
+
+##Create the models
+
+#Response data
+Null model
+```{r}
+null.fitts <- brm(responsetime ~ 1, data = fitts_response,
+                  family = skew_normal(),
+                  prior = c(prior(normal(1500, 300), class = Intercept),
+                           prior(normal(0, 100), class = sigma)),
+                  save_all_pars = TRUE,
+                  chains = 4, cores  = 4, iter = 2000)
+```
+
+Simple model
+```{r}
+simple.fitts <- brm(responsetime ~ 1 + hand + Load_kind + Distance, data = fitts_response,
+                  family = skew_normal(),
+                  prior = c(prior(normal(1500, 300), class = Intercept),
+                            prior(normal(0, 100), class = b, coef = handright_responsetime),
+                            prior(normal(0, 250), class =  b, coef = Load_kinddiff),
+                            prior(normal(0,250), class = b, coef = Load_kindSameEE),
+                            prior(normal(0,250), class = b, coef = Load_kindSameVV),
+                            prior(normal(0, 100), class = b, coef = DistanceL),
+                            prior(normal(0,100), class = b, coef = DistanceR),
+                            prior(normal(0, 100), class = sigma)),
+                  save_all_pars = TRUE,
+                  chains = 4, cores  = 4, iter = 2000)
+```
+
+Complex model
+```{r}
+complex.fitts <- brm(responsetime ~ 1 + hand * Load_kind * Distance + 
+                       (1 | Participant ) + (1 | TrialNo), 
+                  data = fitts_response,
+                  family = skew_normal(),
+                  prior = prior2,
+                  save_all_pars = TRUE,
+                  chains = 4, cores  = 4, iter = 4000)
+```
+
+```{r}
+# fitts.full <- brm(responsetime ~ 1 + hand + Load_kind + Distance + 
+#                        (1 | Participant ) + (1 | TrialNo), 
+#                   data = fitts_response,
+#                   family = skew_normal(),
+#                   prior = prior2,
+#                   save_all_pars = TRUE,
+#                   chains = 4, cores  = 4, iter = 4000)
+
+#can run this later when getting ready to submit
+```
+
+```{r}
+plot(null.fitts)
+plot(simple.fitts)
+plot(complex.fitts)
+```
+
+Summaries of each model.
+```{r}
+summary(null.fitts)
+```
+
+```{r}
+summary(simple.fitts)
+```
+
+```{r}
+summary(complex.fitts)
+```
+Wow these r-hat values are nuts! I think the simple model will be best, but I think we should try adding random effects within the model, but no interaction effects. I could also increase the number of iterations to use with this model, however, I frankly do not have the time! I may need to look into using a cluster. 
+```{r}
+brms::posterior_samples(null.fitts) %>% str()
+```
+
+```{r}
+brms::posterior_samples(simple.fitts) %>% str()
+```
+
+
+```{r}
+brms::mcmc_plot(simple.fitts, type = "dens")
+```
+
+```{r}
+brms::mcmc_plot(complex.fitts, type = "dens")
+```
+
+```{r}
+pp_check(null.fitts, type = "dens_overlay", nsamples = 50)
+```
+Null model is not capturing the data.
+
+```{r}
+pp_check(simple.fitts, type = "dens_overlay", nsamples = 50)
+```
+Again...not great.
+
+```{r}
+pp_check(complex.fitts, type = "dens_overlay", nsamples = 100)
+```
+
+
+```{r}
+library(emmeans)
+emmeans(complex.fitts, pairwise~hand:Distance)
+```
+
+```{r}
+posterior_summary(simple.fitts)[,c("Estimate","Q2.5","Q97.5")]
+```
+
+From looking at everything so far, it looks like the simple model (additive) performs better than the complex (interactive) model. However, I just want to double check to be sure. While both models both have good r-hat values (all at 1.00), the simple model has larger ESSs. 
+
+First, look into Bayes Factor for both models.
+
+
+
+### For Velocity Data
+
+
+
+```{r}
+hist(fitts_vel$vel_index)
+```
+Use skew normal family.
+
+```{r}
+get_prior(vel_index ~ 1 + hand + Distance + Load_kind + (1|Participant) + (1|TrialNo), 
+          data = fitts_vel, family = skew_normal())
+```
+
+```{r}
+prior_vel <- c(prior(normal(500, 200), class = Intercept),
+            prior(normal(0, 75), class = b, coef = DistanceL),
+            prior(normal(0,75), class = b, coef = DistanceR),
+            prior(normal(0, 50), class = b, coef = handvel_inxR),
+            prior(normal(0, 100), class =  b, coef = Load_kinddiff),
+            prior(normal(0,100), class = b, coef = Load_kindSameEE),
+            prior(normal(0,100), class = b, coef = Load_kindSameVV),
+            prior(normal(0, 50), class = sigma),
+            prior(normal(0, 50), class = sd))
+```
+
+```{r}
+vel.brm.prior <- brm(vel_index ~ 1 + hand + Load_kind + Distance + (1|Participant) + (1|TrialNo),
+                  data = fitts_vel,
+                  sample_prior = "only",
+                  family = skew_normal(),
+                  prior = prior_vel)
+```
+
+```{r}
+pp_check(vel.brm.prior, type = "dens_overlay", nsamples = 100)
+```
+This looks pretty messy. Let's try to contain the SD of our priors.
+
+```{r}
+prior_vel2 <- c(prior(normal(500, 150), class = Intercept),
+            prior(normal(0, 75), class = b, coef = DistanceL),
+            prior(normal(0,75), class = b, coef = DistanceR),
+            prior(normal(0, 75), class = b, coef = handvel_inxR),
+            prior(normal(0, 75), class =  b, coef = Load_kinddiff),
+            prior(normal(0,75), class = b, coef = Load_kindSameEE),
+            prior(normal(0,75), class = b, coef = Load_kindSameVV),
+            prior(normal(0, 75), class = sigma),
+            prior(normal(0, 75), class = sd))
+```
+
+```{r}
+vel.brm.prior2 <- brm(vel_index ~ 1 + hand + Load_kind + Distance + (1|Participant) + (1|TrialNo),
+                  data = fitts_vel,
+                  sample_prior = "only",
+                  family = skew_normal(),
+                  prior = prior_vel2)
+```
+
+```{r}
+pp_check(vel.brm.prior2, type = "dens_overlay", nsamples = 100)
+```
+This is more reasonable, however we do get some impossible values. We'll work with what we have so far, because we have so much data, the priors shouldn't have a large influence on the outcome.
+
+
+
+```{r}
+full.vel <- brm(vel_index ~ 1 + hand + Load_kind + Distance + 
+                       (1 | Participant ) + (1 | TrialNo), 
+                  data = fitts_vel,
+                  family = skew_normal(),
+                  prior = prior_vel2,
+                  save_all_pars = TRUE,
+                  chains = 4, cores  = 4, iter = 4000)
+```
+
+Okay so something is going wrong when I'm trying to perform bayesian modeling. Lots of divergent transitions, and it literally takes two hours to run every model. For now, I'm going to model the same data using lmer, as it is much faster. I'll work on optimizing bayesian modeling for the paper. 
+
+
+##Frequentist quick and dirty stats
+
+```{r}
+library(lme4)
+library(lmerTest) #package that provides p-values for lmer tests
+
+fitts_react$hand <- as.factor(fitts_react$hand)
+fitts_move$hand <- as.factor(fitts_move$hand)
+fitts_response$hand <- as.factor(fitts_response$hand)
+fitts_vel$hand <- as.factor(fitts_vel$hand)
+fitts_acc$hand <- as.factor(fitts_acc$hand)
+
+```
+
+#Workflow: 
+
+Per DV: 
+
+1) build model
+2) compare model fits
+3) test assumptions
+
+First let's model reaction time:
+
+
+```{r}
+react.simple <- lmer(log(reacttime) ~ 1 + hand + Load_kind + Distance +
+                      (1|Participant) + (1|TrialNo), data = fitts_react)
+```
+
+```{r}
+react.full <- lmer(log(reacttime) ~ 1 + hand * Load_kind * Distance +
+                     (1 | Participant) +(1 | TrialNo), data = fitts_react)
+```
+
+```{r}
+broom.mixed::tidy(react.simple)
+```
+
+```{r}
+broom.mixed::tidy(react.full)
+```
+
+```{r}
+react.check <- lmer(log(reacttime) ~ 1 + hand * Load_kind * Distance * Difficulty +
+                     (1 | Participant) +(1 | TrialNo), data = fitts_react)
+```
+
+```{r}
+anova(react.full, react.check)
+```
+So when adding Difficulty as a factor to the model, we actually get a larger BIC value and comprable AIC values, however the model is being reported as significantly different from the proposed "full" model without difficulty as a factor. Since there is an increase in error, I don't think we should use the model with difficulty in it. Furthermore, the model with difficulty included as a factor has highly correlated values with another factor, and is dropping a column, which I can't really do anything about since the data have already been collected, and I'm not sure why they're correlated. 
+
+For now, we will continue with the proposed "react.full" model.
+```{r}
+anova(react.simple, react.full)
+```
+
+The full model looks like it's a better fit.
+
+
+
+```{r}
+react.simple %>%
+  broom.mixed::glance() %>% print()
+```
+
+```{r}
+react.full %>%
+  broom.mixed::glance() %>% print()
+```
+
+We see that out of the two models for reaction time, we have a lower AIC and BIC values in the full model compared to the simple model. Additionally, the difference between the two BIC vcalues is greater than 10, so that's a good indicator! 
+
+```{r}
+summary(react.full)
+```
+
+```{r}
+summary(react.full)$coef
+```
+
+```{r}
+exp(4.89+1.31) 
+```
+```{r}
+exp(4.89-0.97)
+```
+```{r}
+exp(0.36)
+```
+
+```{r}
+exp(4.89-1.09)
+```
+
+```{r}
+qqnorm(resid(react.full))
+```
+Welp those are logarithmically distributed residuals...is this only because I applied a log transform to the data? If so that's fine, but if it's because the error isn't distributed properly, then this really sucks.
+
+```{r}
+library(performance)
+library(see)
+library(qqplotr)
+
+check_model(react.full)
+```
+
+
+#Movetime modeling
+```{r}
+move.simple <- lmer(movetime ~ 1 + hand + Load_kind + Distance +
+                      (1|Participant) + (1|TrialNo), data = fitts_move,
+                    REML = FALSE)
+```
+couldn't do log transformation here in either model for some reason? kept putting out an error:
+Error in mkRespMod(fr, REML = REMLpass) : NA/NaN/Inf in 'y'
+```{r}
+move.full <- lmer(movetime ~ 1 + hand * Load_kind * Distance +
+                     (1 | Participant) +(1 | TrialNo), data = fitts_move,
+                  REML = FALSE)
+```
+
+```{r}
+broom.mixed::tidy(move.simple)
+```
+
+```{r}
+broom.mixed::tidy(move.full)
+```
+
+```{r}
+anova(move.simple, move.full)
+```
+
+```{r}
+move.simple %>%
+  broom.mixed::glance() %>% print()
+```
+
+```{r}
+move.full %>%
+  broom.mixed::glance() %>% print()
+```
+
+Looks like the full model is better to use for movement time.
+
+```{r}
+summary(move.full)
+```
+```{r}
+(1002.11+328.31)
+```
+
+
+```{r}
+qqnorm(resid(move.full))
+```
+
+Response time
+
+```{r}
+response.simple <- lmer(log(responsetime) ~ 1 + hand + Load_kind + Distance +
+                      (1|Participant) + (1|TrialNo), data = fitts_response,
+                    REML = FALSE)
+```
+
+
+```{r}
+response.full <- lmer(log(responsetime) ~ 1 + hand * Load_kind * Distance +
+                     (1 | Participant) +(1 | TrialNo), data = fitts_response,
+                  REML = FALSE)
+```
+
+```{r}
+broom.mixed::tidy(response.simple)
+```
+
+```{r}
+broom.mixed::tidy(response.full)
+```
+
+```{r}
+anova(response.simple, response.full)
+```
+
+```{r}
+response.simple %>%
+  broom.mixed::glance() %>% print()
+```
+
+```{r}
+response.full %>%
+  broom.mixed::glance() %>% print()
+```
+
+Looks like the full model is better to use for response time. That's pretty clear cut and distinguishable.
+
+```{r}
+summary(response.full)
+```
+```{r}
+exp(7.09+0.85)
+```
+```{r}
+exp(0.35)
+```
+
+```{r}
+qqnorm(resid(response.full))
+```
+
+Peak velocity index
+
+```{r}
+vel.simple <- lmer(vel_index ~ 1 + hand + Load_kind + Distance +
+                      (1|Participant) + (1|TrialNo), data = fitts_vel,
+                    REML = FALSE)
+```
+
+
+```{r}
+vel.full <- lmer(vel_index ~ 1 + hand * Load_kind * Distance +
+                     (1 | Participant) +(1 | TrialNo), data = fitts_vel,
+                  REML = FALSE)
+```
+
+```{r}
+broom.mixed::tidy(vel.simple)
+```
+
+```{r}
+broom.mixed::tidy(vel.full)
+```
+
+```{r}
+anova(vel.simple, vel.full)
+```
+
+```{r}
+vel.simple %>%
+  broom.mixed::glance() %>% print()
+```
+
+```{r}
+vel.full %>%
+  broom.mixed::glance() %>% print()
+```
+
+Looks like the full model is better to use for timepoint at peak velocity. .
+
+```{r}
+summary(vel.full)
+```
+
+```{r}
+633.37+76.62
+```
+
+```{r}
+qqnorm(resid(vel.full))
+```
+
+Timepoint at peak acceleration
+
+```{r}
+acc.simple <- lmer(acc_index ~ 1 + hand + Load_kind + Distance +
+                      (1|Participant) + (1|TrialNo), data = fitts_acc,
+                    REML = FALSE)
+```
+
+
+```{r}
+acc.full <- lmer(acc_index ~ 1 + hand * Load_kind * Distance +
+                     (1 | Participant) +(1 | TrialNo), data = fitts_acc,
+                  REML = FALSE)
+```
+
+```{r}
+broom.mixed::tidy(acc.simple)
+```
+
+```{r}
+broom.mixed::tidy(acc.full)
+```
+
+```{r}
+anova(acc.simple, acc.full)
+```
+
+```{r}
+acc.simple %>%
+  broom.mixed::glance() %>% print()
+```
+
+```{r}
+acc.full %>%
+  broom.mixed::glance() %>% print()
+```
+
+Looks like the full model is better to use for timepoint at peak acceleration. .
+
+```{r}
+summary(acc.full)
+```
+```{r}
+763.09+114.85
+```
+
+```{r}
+qqnorm(resid(acc.full))
+```
+
+```{r}
+fitts_peakvel <- pivot_longer(fitts, c(peak_velLeft,peak_velRight), names_to = "hand", values_to = "peakvelocity")
+head(fitts_peakvel)
+```
+
+```{r}
+peakvel.simple <- lmer(peakvelocity ~ 1 + hand + Load_kind + Distance +
+                      (1|Participant) + (1|TrialNo), data = fitts_peakvel,
+                    REML = FALSE)
+```
+
+
+```{r}
+peakvel.full <- lmer(peakvelocity ~ 1 + hand * Load_kind * Distance +
+                     (1 | Participant) +(1 | TrialNo), data = fitts_peakvel,
+                  REML = FALSE)
+```
+
+```{r}
+broom.mixed::tidy(peakvel.simple)
+```
+
+```{r}
+broom.mixed::tidy(peakvel.full)
+```
+
+```{r}
+anova(peakvel.simple, peakvel.full)
+```
+The full model performs much better than the simple model.
+
+```{r}
+peakvel.simple %>%
+  broom.mixed::glance() %>% print()
+```
+
+```{r}
+peakvel.full %>%
+  broom.mixed::glance() %>% print()
+```
+
+Looks like the full model is better to use for peak velocity. .
+
+```{r}
+summary(peakvel.full)
+```
+```{r}
+218.49+10.70
+```
+
+```{r}
+fitts_peakacc <- pivot_longer(fitts, c(peakAccL,peakAccR), names_to = "hand", values_to = "peakacc")
+head(fitts_peakacc)
+```
+
+```{r}
+peakacc.simple <- lmer(peakacc ~ 1 + hand + Load_kind + Distance +
+                      (1|Participant) + (1|TrialNo), data = fitts_peakacc,
+                    REML = FALSE)
+```
+
+
+```{r}
+peakacc.full <- lmer(peakacc ~ 1 + hand * Load_kind * Distance +
+                     (1 | Participant) +(1 | TrialNo), data = fitts_peakacc,
+                  REML = FALSE)
+```
+
+```{r}
+broom.mixed::tidy(peakacc.simple)
+```
+
+```{r}
+broom.mixed::tidy(peakacc.full)
+```
+
+```{r}
+anova(peakacc.simple, peakacc.full)
+```
+The full model performs a  little better than the simple model.
+
+```{r}
+peakacc.simple %>%
+  broom.mixed::glance() %>% print()
+```
+
+```{r}
+peakacc.full %>%
+  broom.mixed::glance() %>% print()
+```
+
+Looks like the full model is better to use for peak acceleration .
+
+```{r}
+summary(peakacc.full)
+```
+
+```{r}
+1606.94+132.22
+```
+
+
+
+
+
